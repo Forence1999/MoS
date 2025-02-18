@@ -1,0 +1,15 @@
+compute_dtype = (
+    torch.float16 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32)
+)
+其作用
+
+
+添加lora的modules: {
+    "k_proj",
+    "v_proj",
+    "down_proj",
+    "up_proj",
+    "o_proj",
+    "gate_proj",
+    "q_proj",
+}

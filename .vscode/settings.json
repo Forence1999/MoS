@@ -1,0 +1,10 @@
+{
+    "[python]": {
+        "editor.defaultFormatter": "ms-python.black-formatter"
+    },
+    "python.envFile": "${workspaceFolder}/.vscode/.env",
+    "python.analysis.autoImportCompletions": true,
+    "python.analysis.typeCheckingMode": "off",
+    "python.defaultInterpreterPath": "~/miniconda3/bin/python",
+    "python.pythonPath": "~/miniconda3/bin/python",
+}
