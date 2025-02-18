@@ -81,6 +81,9 @@ docker run \
     -it forence/forence/mop_llama3:v0 /bin/bash
 
 cd /workspace
+
+# Switch to the branch for LLaMA3.2-3B
+git checkout LLaMA3
 ```
 
 
