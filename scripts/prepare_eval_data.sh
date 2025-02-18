@@ -43,6 +43,6 @@ done
 # we use self-instruct test set, and vicuna test set for our human evaluation
 mkdir -p data/eval/creative_tasks
 wget -O data/eval/creative_tasks/self_instruct_test.jsonl https://github.com/yizhongw/self-instruct/raw/main/human_eval/user_oriented_instructions.jsonl
-wget -O data/eval/creative_tasks/vicuna_test.jsonl https://github.com/lm-sys/FastChat/raw/main/fastchat/llm_judge/data/vicuna_bench/question.jsonl 
+wget -O data/eval/creative_tasks/vicuna_test.jsonl https://github.com/lm-sys/FastChat/raw/main/fastchat/llm_judge/data/vicuna_bench/question.jsonl # modified by Forence original url: https://github.com/lm-sys/FastChat/raw/main/fastchat/eval/table/question.jsonl
 
 echo "Done!"

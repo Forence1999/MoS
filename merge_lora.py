@@ -1,7 +1,12 @@
 import torch
 import argparse
 from peft import PeftConfig, PeftModel
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+    AutoConfig,
+)
 import bitsandbytes as bnb
 import os
 import copy
@@ -61,36 +66,92 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
     peft_config = PeftConfig.from_pretrained(args.lora_model_name_or_path)
+
     print("Loading the base model...")
     if args.qlora:
-        quantization_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            load_in_8bit=False,
-            llm_int8_threshold=6.0,
-            llm_int8_has_fp16_weight=False,
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf4",
-        )
         base_model = AutoModelForCausalLM.from_pretrained(
-            args.base_model_name_or_path
-            if args.base_model_name_or_path
-            else peft_config.base_model_name_or_path,
-            load_in_4bit=True,
+            (
+                args.base_model_name_or_path
+                if args.base_model_name_or_path
+                else peft_config.base_model_name_or_path
+            ),
             torch_dtype=torch.bfloat16,
-            quantization_config=quantization_config,
-            load_in_8bit=False,
             use_flash_attention_2=False,
+            device_map="auto",
+            quantization_config=BitsAndBytesConfig(
+                load_in_4bit=True,
+                load_in_8bit=False,
+                llm_int8_threshold=6.0,
+                llm_int8_has_fp16_weight=False,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,
+            ),
         )
         base_model = prepare_model_for_kbit_training(
             base_model, use_gradient_checkpointing=True
         )
-        base_model = dequantize_model(base_model, device="cpu")
+        # for name, module in base_model.named_modules():
+        #     if isinstance(module, LoraLayer):
+        #         module = module.to(torch.bfloat16)
+        #     if "norm" in name:
+        #         module = module.to(torch.float32)
+        #     if "lm_head" in name or "embed_tokens" in name:
+        #         if hasattr(module, "weight"):
+        #             if module.weight.dtype == torch.float32:
+        #                 module = module.to(torch.bfloat16)
+
+        # base_model = base_model.dequantize()
+        base_model = dequantize_model(base_model, device=base_model.device)
+        # # # restore the original config
+        # base_model.config = AutoConfig.from_pretrained(
+        #     (
+        #         args.base_model_name_or_path
+        #         if args.base_model_name_or_path
+        #         else peft_config.base_model_name_or_path
+        #     ),
+        #     torch_dtype=torch.bfloat16,
+        #     use_flash_attention_2=False,
+        #     device_map="auto",
+        # )
+        # del (
+        #     base_model.hf_quantizer,
+        #     base_model.is_4bit_serializable,
+        #     base_model.is_quantized,
+        #     base_model.is_loaded_in_4bit,
+        # )
+
+        model_shell = AutoModelForCausalLM.from_pretrained(
+            (
+                args.base_model_name_or_path
+                if args.base_model_name_or_path
+                else peft_config.base_model_name_or_path
+            ),
+            torch_dtype=torch.bfloat16,
+            use_flash_attention_2=False,
+            device_map="auto",
+        )
+        # model_shell = AutoModelForCausalLM.from_config(
+        #     AutoConfig.from_pretrained(
+        #         (
+        #             args.base_model_name_or_path
+        #             if args.base_model_name_or_path
+        #             else peft_config.base_model_name_or_path
+        #         ),
+        #         torch_dtype=torch.bfloat16,
+        #         use_flash_attention_2=False,
+        #         device_map="auto",
+        #     )
+        # )
+        model_shell.load_state_dict(base_model.state_dict())
+        base_model = model_shell
     else:
         base_model = AutoModelForCausalLM.from_pretrained(
-            args.base_model_name_or_path
-            if args.base_model_name_or_path
-            else peft_config.base_model_name_or_path,
+            (
+                args.base_model_name_or_path
+                if args.base_model_name_or_path
+                else peft_config.base_model_name_or_path
+            ),
         )
     print("Loading the lora model...")
     lora_model = PeftModel.from_pretrained(base_model, args.lora_model_name_or_path)
@@ -122,6 +183,7 @@ if __name__ == "__main__":
 
     embedding_size = merged_model.get_input_embeddings().weight.shape[0]
     if len(tokenizer) > embedding_size:
+        assert False, "tokenizer should never add new tokens"
         print(
             f"The vocabulary the tokenizer contains {len(tokenizer)-embedding_size} more tokens than the base model."
         )

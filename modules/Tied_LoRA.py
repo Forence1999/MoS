@@ -1,20 +1,22 @@
+# -*- coding: utf-8 _*-
+# @License: MIT Licence
+# @Author: Forence
+# @Contact: wang00sheng@gmail.com
+# @GitHub: https://github.com/Forence1999
+# @Time: 03/11/2023
+# @Description:
+
 import os
-import math
-import warnings
-from copy import deepcopy
-
+from peft.tuners.lora import Linear4bit
 import types
-from typing import Any, Dict, List, Optional
-
 from peft import LoraConfig
 from peft.tuners.lora import LoraLayer
-from peft.tuners.lora import Linear4bit
-
 import torch
 import torch.nn as nn
 import torch.functional as F
 from torch.nn.modules.dropout import Dropout
-
+import math
+from typing import Any, Dict, List, Optional
 from peft import (
     get_peft_model_state_dict,
     PromptLearningConfig,
@@ -26,7 +28,11 @@ from peft.utils import (
 from safetensors.torch import save_file as safe_save_file
 import bitsandbytes as bnb
 from dataclasses import asdict, dataclass, field
-
+import dataclasses
+from copy import deepcopy
+import transformers
+import math
+import warnings
 
 
 def kaiming_uniform_(
@@ -112,7 +118,7 @@ class LoraConfig_Tied_Sharing(LoraConfig):
     init_lora_A_vec_std: float = field(
         default=None,
         metadata={
-            "help": "The std value of MoS's LoRA_A vector's normal distribution initialization.\
+            "help": "The std value of mos's LoRA_A vector's normal distribution initialization.\
             If provided, lora_A_vec will be initialized with normal distribution.\
             Otherwise, lora_A_vec will be initialized with constant distribution."
         },
@@ -134,6 +140,21 @@ class LoraConfig_Tied_Sharing(LoraConfig):
         default=None,
         metadata={"help": "Number of chunks per vector."},
     )
+    # lora_A_chunk_size: int = field(
+    #     default=None, metadata={"help": "Chunk size along LoRA_B direction."}
+    # )
+    # lora_B_chunk_size: int = field(
+    #     default=None, metadata={"help": "Chunk size along LoRA_B direction."}
+    # )
+    # lora_A_shift_size: int = field(
+    #     default=None, metadata={"help": "Shift size along LoRA_A direction."}
+    # )
+    # lora_B_shift_size: int = field(
+    #     default=None, metadata={"help": "Shift size along LoRA_B direction."}
+    # )
+    # lora_chunk_num: int = field(
+    #     default=None, metadata={"help": "Total number of chunks."}
+    # )
 
 
 # generate chunkwise sharing LoRA config
@@ -157,13 +178,16 @@ def gen_tied_lora_config(tied_config, lora_config):
     assert (
         tied_config.init2zero_via_vec == False
     ), "init2zero_via_vec is banned. The relevant code is not checked yet."
+    # assert (
+    #     tied_config.enable_lora_vec == False
+    # ), "enable_lora_vec is banned. The relevant code is not checked yet."
     assert (
         tied_config.enable_lora_bias == False
     ), "enable_lora_bias is banned. The relevant code is not checked yet."
 
     assert (
         tied_config.ft_mode == "mos"
-    ), "Only support MoS in this version. Other modes have not been checked yet!"
+    ), "Only support mos in this version. Other modes have not been checked yet!"
 
     if tied_config.valid_param_private_r == tied_config.valid_param_lora_r:
         assert (
@@ -314,7 +338,7 @@ def LoraLayer_reset_lora_parameters(self, adapter_name, tied_config):
         # 2. For each lora pair, mapping the lora_A_vec * lora_A_anti_vec to 1.0
 
         if self.ft_mode == "mos":
-            print(f"Initialization mode for LoRA module: MoS.")
+            print(f"Initialization mode for LoRA module: mos.")
             # chunk_pool_r = self.lora_A[adapter_name].out_features
             layer_idx = self.layer_idx
             private_start_idx = (
@@ -366,7 +390,7 @@ def LoraLayer_reset_lora_parameters(self, adapter_name, tied_config):
 
         # initialize lora_pair_mask_B
         if self.ft_mode == "mos":
-            print(f"Initialization mode for LoRA module: MoS.")
+            print(f"Initialization mode for LoRA module: mos.")
             # chunk_pool_r = self.lora_A[adapter_name].out_features
             layer_idx = self.layer_idx
             private_start_idx = (
@@ -500,6 +524,10 @@ def LoraLinear4bit_Tied_LoRA_forward(
     """
     result = self.base_layer.forward(x, *args, **kwargs)
 
+    # proj_name = self.layer_name.split(".")[-1]
+    # if not (proj_name in ["q_proj", "k_proj", "v_proj"]):
+    #     # only enable LoRA for q k v proj
+    #     return result
 
     assert len(self.active_adapters) == 1, "Only support single adapter now."
     active_adapter = self.active_adapters[0]
@@ -524,6 +552,7 @@ def LoraLinear4bit_Tied_LoRA_forward(
         lora_A_anti_vec = self.lora_A_anti_vec[active_adapter]
         lora_pair_mask = self.lora_pair_mask[active_adapter]
         lora_pair_mask_B = self.lora_pair_mask_B[active_adapter]
+        # lora_B_vec = self.lora_B_vec[active_adapter]
 
         # forward
         requires_conversion = not torch.is_autocast_enabled()
@@ -552,6 +581,15 @@ def LoraLinear4bit_Tied_LoRA_forward(
         if requires_conversion:
             output = output.to(expected_dtype)
 
+        # # original implementation
+        # output = (
+        #     self.lora_B[active_adapter](
+        #         self.lora_A[active_adapter](
+        #             self.lora_dropout[active_adapter](x)
+        #         )
+        #     )
+        #     * self.scaling[active_adapter]
+        # )
         result += output
 
     return result
@@ -642,7 +680,7 @@ def share_lora_tiedly(model, tied_config):
         "layer_num": model.config.num_hidden_layers,
     }
 
-    # instantiate the MoS modules
+    # instantiate the mos modules
     pool_r = tied_config.valid_param_lora_r * model_info["layer_num"]
     num_chunk_per_vec = tied_config.num_chunk_per_vec
     chunk_pool_r = pool_r * num_chunk_per_vec
@@ -714,10 +752,10 @@ def share_lora_tiedly(model, tied_config):
             ),
         },
     }
-    print("-" * 20, f"Injecting MoS ... ", "-" * 20)
+    print("-" * 20, f"Injecting mos ... ", "-" * 20)
     for k, v in model.named_modules():
         if isinstance(v, Linear4bit):
-            print(f"Adding MoS to {k}...")
+            print(f"Adding mos to {k}...")
 
             # generate config
             adapter_name = v.active_adapter[0]
@@ -759,14 +797,18 @@ def share_lora_tiedly(model, tied_config):
             v.lora_B.to(dtype=torch.float32)
             v.lora_A_vec.to(dtype=torch.float32)
             v.lora_A_anti_vec.to(dtype=torch.float32)
+            # v.lora_pair_mask.to(dtype=torch.long) # don't support long
+            # v.lora_pair_mask_B.to(dtype=torch.long)
+            # v.lora_B_vec.to(dtype=torch.float32)
 
             # modify the forward function of LoraLinear4bit
             v.forward = types.MethodType(LoraLinear4bit_Tied_LoRA_forward, v)
 
-
+    # modify save_pretrained function: do not need any change
+    # model.save_pretrained = types.MethodType(PEFT_save_pretrained, model)
     print(
         "-" * 20,
-        "Finish the modification for MoS. ",
+        "Finish the modification for mos. ",
         "-" * 20,
     )
 

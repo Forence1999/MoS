@@ -1,3 +1,12 @@
+# -*- coding: utf-8 _*-
+# @License: MIT Licence
+# @Author: Forence
+# @Contact: wang00sheng@gmail.com
+# @GitHub: https://github.com/Forence1999
+# @Time: 18/10/2023
+# @Description: structurally dropout LoRA modules
+
+
 import os
 import sys
 import time

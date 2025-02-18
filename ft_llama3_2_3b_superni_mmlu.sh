@@ -1,8 +1,10 @@
 #!/bin/bash
-
+set -e # exit on error
 TIME=$(date "+%Y%m%d-%H%M%S")
 echo -e "Time: $TIME"
 
+# lora_r means the active rank of LoRA.
+# valid_param_lora_r means the equivalent rank (for trainable params).
 lora_r=$1
 seed=$2
 GPU_ID=$3
@@ -13,11 +15,17 @@ init_lora_A_vec_std=$7
 valid_param_private_r=$8
 valid_param_lora_r=$9
 num_chunk_per_vec=${10}
+num_epoch=1
 
-output_dir=./output/LLaMA2_7b_MoS_code_alpaca_${TIME}_GPU_${GPU_ID}_r_${lora_r}_lr_${learning_rate}_sd_${seed}_ft_mode_${finetune_mode}_init_lora_A_vec_value_${init_lora_A_vec_value}_init_lora_A_vec_std_${init_lora_A_vec_std}_valid_param_private_r_${valid_param_private_r}_valid_param_lora_r_${valid_param_lora_r}_num_chunk_${num_chunk_per_vec}
+output_dir=./output/3B/MoS_superni_${TIME}_GPU_${GPU_ID}_r_${lora_r}_lr_${learning_rate}_sd_${seed}_ft_mode_${finetune_mode}_init_lora_A_vec_value_${init_lora_A_vec_value}_init_lora_A_vec_std_${init_lora_A_vec_std}_valid_param_private_r_${valid_param_private_r}_valid_param_lora_r_${valid_param_lora_r}_num_chunk_${num_chunk_per_vec}
 
 export PYTHONPATH="${PYTHONPATH}:/workspace"
 export CUDA_VISIBLE_DEVICES=$GPU_ID
+
+# Check if output_dir exists, and create it if not
+if [ ! -d "$output_dir" ]; then
+    mkdir -p "$output_dir"
+fi
 
 # Train QLoRA
 echo "------------------- Training QLoRA -------------------"
@@ -40,7 +48,7 @@ python finetune_trainer.py \
     --enable_lora_bias False \
     --init2zero_via_vec False \
     --lora_modules all \
-    --model_name_or_path meta-llama/Llama-2-7b-hf \
+    --model_name_or_path meta-llama/Llama-3.2-3B \
     --token ${HF_TOKEN} \
     --output_dir ${output_dir} \
     --overwrite_output_dir True \
@@ -50,7 +58,7 @@ python finetune_trainer.py \
     --bf16 True \
     --tf32 True \
     --do_train True \
-    --train_file data/processed/code_alpaca/code_alpaca_data.jsonl \
+    --train_file data/processed/super_ni/super_ni_data.jsonl \
     --use_fast_tokenizer False \
     --streaming False \
     --overwrite_cache False \
@@ -63,7 +71,7 @@ python finetune_trainer.py \
     --lr_scheduler_type linear \
     --per_device_train_batch_size 16 \
     --gradient_accumulation_steps 1 \
-    --max_steps 10000 \
+    --num_train_epochs ${num_epoch} \
     --weight_decay 0.0 \
     --max_grad_norm 0.3 \
     --do_eval True \
@@ -77,52 +85,58 @@ python finetune_trainer.py \
     --logging_steps 10 \
     --save_strategy steps \
     --save_steps 1000 \
-    --save_total_limit 1
+    --save_total_limit 1 \
+    2>&1 | tee -a "$output_dir/train.log"
 # --resume_from_checkpoint None \
 # --max_train_samples None \
 # --use_auth_token True \
 # --adam_beta2 0.999  \
 # --max_new_tokens 256  \
+# --max_steps 5 \
+
+    
+
+# remove .safetensors so that .bin will be loaded
+rm -rf ${output_dir}/adapter_model.safetensors
+
 
 # Merge QLoRA
 echo "------------------- Merge QLoRA -------------------"
 python /workspace/merge_lora.py \
-    --base_model_name_or_path meta-llama/Llama-2-7b-hf \
+    --base_model_name_or_path meta-llama/Llama-3.2-3B \
     --lora_model_name_or_path ${output_dir} \
     --output_dir ${output_dir}/lora_merged/ \
     --qlora \
-    --save_tokenizer
+    --save_tokenizer \
+    2>&1 | tee -a "$output_dir/merge.log"
 
-# Evaluating Tulu 7B model using temperature 0.1 to get the pass@1 score
-echo "------------------- Evaluating on Codex-Eval -------------------"
-python -m eval.codex_humaneval.run_eval \
-    --data_file data/eval/codex_humaneval/HumanEval.jsonl \
+# Evaluating Tulu 7B model using 0 shot and chat format
+echo "------------------- Evaluating on MMLU -------------------"
+python -m eval.mmlu.run_eval \
+    --ntrain 0 \
+    --data_dir data/eval/mmlu \
+    --save_dir ${output_dir}/mmlu_results \
     --model_name_or_path ${output_dir}/lora_merged/ \
     --tokenizer_name_or_path ${output_dir}/lora_merged/ \
+    --eval_batch_size 16 \
     --use_slow_tokenizer \
-    --save_dir ${output_dir}/codex_eval_results/pass1 \
-    --eval_pass_at_ks 1 5 10 20 \
-    --temperature 0.1 \
-    --unbiased_sampling_size_n 20 \
-    --eval_batch_size 4 \
+    --load_in_8bit \
+    --use_chat_format \
+    --chat_formatting_function eval.templates.create_prompt_with_tulu_chat_format \
+    2>&1 | tee -a "$output_dir/mmlu_eval.log"
+
+sleep 3m
+
+echo "------------------- Evaluating on TydiQA -------------------"
+python -m eval.tydiqa.run_eval \
+    --data_dir data/eval/tydiqa \
+    --save_dir ${output_dir}/tydiqa_results \
+    --model_name_or_path ${output_dir}/lora_merged/ \
+    --tokenizer_name_or_path ${output_dir}/lora_merged/ \
+    --eval_batch_size 16 \
+    --use_slow_tokenizer \
     --load_in_8bit \
     --use_vllm \
     --use_chat_format \
-    --chat_formatting_function eval.templates.create_prompt_with_tulu_chat_format
-
-# Evaluating Tulu 7B model using temperature 0.8 to get the pass@10 score
-echo "------------------- Evaluating on Codex-Eval -------------------"
-python -m eval.codex_humaneval.run_eval \
-    --data_file data/eval/codex_humaneval/HumanEval.jsonl \
-    --model_name_or_path ${output_dir}/lora_merged/ \
-    --tokenizer_name_or_path ${output_dir}/lora_merged/ \
-    --use_slow_tokenizer \
-    --save_dir ${output_dir}/codex_eval_results/pass10 \
-    --eval_pass_at_ks 10 \
-    --temperature 0.8 \
-    --unbiased_sampling_size_n 20 \
-    --eval_batch_size 4 \
-    --load_in_8bit \
-    --use_vllm \
-    --use_chat_format \
-    --chat_formatting_function eval.templates.create_prompt_with_tulu_chat_format
+    --chat_formatting_function eval.templates.create_prompt_with_tulu_chat_format \
+    2>&1 | tee -a "$output_dir/tydiqa_eval.log"

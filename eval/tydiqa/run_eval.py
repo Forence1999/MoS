@@ -120,7 +120,8 @@ def main(args):
     else:
         import tiktoken
         tokenizer = tiktoken.get_encoding("cl100k_base")
-
+    
+    tokenizer = tokenizer.tokenizer
     # reduce context length to max_context_length
     if args.max_context_length:
         for example in test_data:

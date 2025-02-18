@@ -5,36 +5,42 @@ This file is modified from the huggingface example for finetuning language model
 [run_clm.py](https://github.com/huggingface/transformers/blob/main/examples/pytorch/language-modeling/run_clm.py)
 """
 
-import os, sys, json
-import logging, warnings
-import random
-import torch
-
-import datasets
-from datasets import load_dataset
+import logging
+import os
+import sys
+import warnings
 from dataclasses import dataclass, field
 from typing import Optional
 from functools import partial
-
+import datasets
+import torch
+from datasets import load_dataset
+import random
+import json
 import transformers
 from transformers import (
-    set_seed,
-    Trainer,
+    AutoConfig,
     AutoModelForCausalLM,
     AutoTokenizer,
     LlamaTokenizer,
     LlamaTokenizerFast,
     HfArgumentParser,
+    # TrainingArguments,
+    Seq2SeqTrainingArguments,
+    Seq2SeqTrainer,
     DataCollatorForSeq2Seq,
+    set_seed,
+    GPTNeoXTokenizerFast,
+    GPT2Tokenizer,
+    OPTForCausalLM,
+    Trainer,
     BitsAndBytesConfig,
 )
-
 from transformers.trainer_utils import get_last_checkpoint
 from open_instruct.finetune import (
     encode_with_prompt_completion_format,
     encode_with_messages_format,
 )
-
 from peft import prepare_model_for_kbit_training, LoraConfig, get_peft_model, PeftModel
 from peft.tuners.lora import LoraLayer
 from modules.Tied_LoRA import gen_tied_lora_config as gen_chunkwise_sharing_lora_config
@@ -127,6 +133,15 @@ class ModelArguments:
             "choices": ["auto", "bfloat16", "float16", "float32"],
         },
     )
+    # low_cpu_mem_usage: bool = field(
+    #     default=False,
+    #     metadata={
+    #         "help": (
+    #             "It is an option to create the model as an empty shell, then only materialize its parameters when the pretrained weights are loaded. "
+    #             "set True will benefit LLM loading time and RAM consumption."
+    #         )
+    #     },
+    # )
     use_flash_attn: bool = field(
         default=False,
         metadata={"help": "Whether to use flash attention in the model training"},
@@ -430,12 +445,12 @@ class SelfDefinedArguments:
         default=False, metadata={"help": "Initialize LoRA via vector."}
     )
     init_lora_A_vec_value: float = field(
-        default=1, metadata={"help": "The initial value of MoS's LoRA_A vector."}
+        default=1, metadata={"help": "The initial value of mos's LoRA_A vector."}
     )
     init_lora_A_vec_std: float = field(
         default=None,
         metadata={
-            "help": "The std value of MoS's LoRA_A vector's normal distribution initialization.\
+            "help": "The std value of mos's LoRA_A vector's normal distribution initialization.\
             If provided, lora_A_vec will be initialized with normal distribution.\
             Otherwise, lora_A_vec will be initialized with constant distribution."
         },
@@ -444,7 +459,7 @@ class SelfDefinedArguments:
         default=1, metadata={"help": "The number of active LoRA pairs."}
     )
     valid_param_private_r: int = field(
-        default=0, metadata={"help": "The number of private LoRA pairs."}
+        default=1, metadata={"help": "The number of private LoRA pairs."}
     )
     ft_mode: str = field(
         default="mos",
@@ -458,8 +473,66 @@ class SelfDefinedArguments:
         metadata={"help": "Number of chunks per vector."},
     )
 
+    # with_tracking: bool = field(
+    #     default=False,
+    #     metadata={"help": "Whether to enable experiment trackers for logging."},
+    # )
+    # clip_grad_norm: float = field(
+    #     default=-1,
+    #     metadata={
+    #         "help": "Clip gradient norm. Not compatible with deepspeed (use deepspeed config instead)."
+    #     },
+    # )
+    # use_8bit_optimizer: bool = field(
+    #     default=False,
+    #     metadata={
+    #         "help": "Use 8bit optimizer from bitsandbytes. Not compatible with deepspeed (use deepspeed config instead)."
+    #     },
+    # )
+    # full_finetune: bool = field(
+    #     default=False, metadata={"help": "Finetune the entire model without adapters."}
+    # )
+    # adam8bit: bool = field(default=False, metadata={"help": "Use 8-bit adam."})
+    # double_quant: bool = field(
+    #     default=True,
+    #     metadata={
+    #         "help": "Compress the quantization statistics through double quantization."
+    #     },
+    # )
+    # quant_type: str = field(
+    #     default="nf4",
+    #     metadata={
+    #         "help": "Quantization data type to use. Should be one of `fp4` or `nf4`."
+    #     },
+    # )
+    # bits: int = field(default=4, metadata={"help": "How many bits to use."})
+    # max_memory_MB: int = field(default=80000, metadata={"help": "Free memory per gpu."})
+    # checkpointing_steps: str = field(
+    #     default=None,
+    #     metadata={
+    #         "help": "Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.",
+    #     },
+    # )
+
 
 def prepare_model_tokenizer(training_args, model_args, selfdefined_args):
+    # config_kwargs = {
+    #     "cache_dir": model_args.cache_dir,
+    #     "revision": model_args.model_revision,
+    #     "token": model_args.token,
+    #     "trust_remote_code": model_args.trust_remote_code,
+    # }
+    # if model_args.config_name:
+    #     config = AutoConfig.from_pretrained(model_args.config_name, **config_kwargs)
+    # elif model_args.model_name_or_path:
+    #     config = AutoConfig.from_pretrained(
+    #         model_args.model_name_or_path, **config_kwargs
+    #     )
+    # else:
+    #     raise ValueError(
+    #         "You are instantiating a new config instance from scratch. This is not supported by this finetuning script."
+    #     )
+
     tokenizer_kwargs = {
         "cache_dir": model_args.cache_dir,
         "use_fast": model_args.use_fast_tokenizer,
@@ -467,7 +540,6 @@ def prepare_model_tokenizer(training_args, model_args, selfdefined_args):
         "token": model_args.token,
         "trust_remote_code": model_args.trust_remote_code,
         "padding_side": "right",
-        "tokenizer_type": "llama"
     }
     if model_args.tokenizer_name:
         tokenizer = AutoTokenizer.from_pretrained(
@@ -512,33 +584,51 @@ def prepare_model_tokenizer(training_args, model_args, selfdefined_args):
             model = AutoModelForCausalLM.from_pretrained(
                 model_args.model_name_or_path,
                 torch_dtype=torch_dtype,
-                use_flash_attention_2=model_args.use_flash_attn
+                use_flash_attention_2=model_args.use_flash_attn,
+                # from_tf=bool(".ckpt" in model_args.model_name_or_path),
+                # config=config,
+                # cache_dir=model_args.cache_dir,
+                # revision=model_args.model_revision,
+                # token=model_args.token,
+                # trust_remote_code=model_args.trust_remote_code,
+                # low_cpu_mem_usage=model_args.low_cpu_mem_usage,
             )
     else:
         assert (
             False
         ), "We don't support training from scratch yet. Please set `model_name_or_path`."
+        logger.warning(
+            "No pretrained model_name_or_path is given. Training new model from scratch."
+        )
+        model = AutoModelForCausalLM.from_config(
+            config, trust_remote_code=model_args.trust_remote_code
+        )
+        n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
+        logger.info(
+            f"Training new model from scratch - Total size={n_params/2**20:.2f}M params"
+        )
 
-    assert isinstance(tokenizer, LlamaTokenizer) or isinstance(
-        tokenizer, LlamaTokenizerFast
-    ), "Only llama Model is supported yet."
+    # Adjust tokenizer
+    # no default pad token for llama!
+    # here we add all special tokens again, because the default ones are not in the special_tokens_map
+    # assert isinstance(tokenizer, LlamaTokenizer) or isinstance(
+    #     tokenizer, LlamaTokenizerFast
+    # ), "Only llama Model is supported yet."
     num_added_tokens = tokenizer.add_special_tokens(
         {
-            "bos_token": "<s>",
-            "eos_token": "</s>",
-            "unk_token": "<unk>",
-            "pad_token": "<pad>",
+            # "unk_token": "<|reserved_special_token_0|>",
+            "pad_token": "<|reserved_special_token_0|>",
         }
     )
-    assert num_added_tokens in [
-        0,
-        1,
-    ], "LlamaTokenizer should only add one special token - the pad_token, or no tokens if pad token present."
+    assert num_added_tokens == 0, "LlamaTokenizer should never add new special token."
 
-    # resize embeddings if needed (e.g. for LlamaTokenizer)
-    embedding_size = model.get_input_embeddings().weight.shape[0]
-    if len(tokenizer) > embedding_size:
-        model.resize_token_embeddings(len(tokenizer))
+    # tokenizer.pad_token_id = tokenizer.eos_token_id
+
+    # # resize embeddings if needed (e.g. for LlamaTokenizer)
+    # embedding_size = model.get_input_embeddings().weight.shape[0]
+    # if len(tokenizer) > embedding_size:
+    #     model.resize_token_embeddings(len(tokenizer))
+
 
     if selfdefined_args.use_lora:
         if selfdefined_args.use_qlora:
@@ -567,11 +657,18 @@ def prepare_model_tokenizer(training_args, model_args, selfdefined_args):
         )
         model = get_peft_model(model, peft_config)
 
+
         if selfdefined_args.use_qlora:
             for name, module in model.named_modules():
                 if isinstance(module, LoraLayer):
                     module = module.to(torch.bfloat16)
 
+        #         if "norm" in name:
+        #             module = module.to(torch.float32)
+        #         if "lm_head" in name or "embed_tokens" in name:
+        #             if hasattr(module, "weight"):
+        #                 if module.weight.dtype == torch.float32:
+        #                     module = module.to(torch.bfloat16)
 
         chunk_config = gen_chunkwise_sharing_lora_config(
             selfdefined_args,
@@ -584,7 +681,6 @@ def prepare_model_tokenizer(training_args, model_args, selfdefined_args):
 
     else:
         assert False, "Only LoRA/QLoRA is supported yet. Must set `use_lora` to True."
-
     # Verifying the datatypes and parameter counts before training.
     print("Trainable parameters:")
     for name, param in model.named_parameters():
@@ -798,6 +894,24 @@ def main():
 
     # Detecting last checkpoint.
     last_checkpoint = None
+    # if (
+    #     os.path.isdir(training_args.output_dir)
+    #     and training_args.do_train
+    #     and not training_args.overwrite_output_dir
+    # ):
+    #     last_checkpoint = get_last_checkpoint(training_args.output_dir)
+    #     if last_checkpoint is None and len(os.listdir(training_args.output_dir)) > 0:
+    #         raise ValueError(
+    #             f"Output directory ({training_args.output_dir}) already exists and is not empty. "
+    #             "Use --overwrite_output_dir to overcome."
+    #         )
+    #     elif (
+    #         last_checkpoint is not None and training_args.resume_from_checkpoint is None
+    #     ):
+    #         logger.info(
+    #             f"Checkpoint detected, resuming training at {last_checkpoint}. To avoid this behavior, change "
+    #             "the `--output_dir` or add `--overwrite_output_dir` to train from scratch."
+    #         )
     assert (
         last_checkpoint is None and training_args.resume_from_checkpoint is None
     ), "Don't support resuming from checkpoint yet. It may cause ckpt loading errors of self-definded LoRA."
@@ -823,7 +937,6 @@ def main():
     )
 
     all_metrics = {"run_name": training_args.run_name}
-
     # Training
     if training_args.do_train:
         logger.info("*** Train ***")

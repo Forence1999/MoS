@@ -13,12 +13,18 @@ init_lora_A_vec_std=$7
 valid_param_private_r=$8
 valid_param_lora_r=$9
 num_chunk_per_vec=${10}
+num_epoch=1
 
-
-output_dir=./output/LLaMA2_7b_MoS_flan_v2_${TIME}_GPU_${GPU_ID}_r_${lora_r}_lr_${learning_rate}_sd_${seed}_ft_mode_${finetune_mode}_init_lora_A_vec_value_${init_lora_A_vec_value}_init_lora_A_vec_std_${init_lora_A_vec_std}_valid_param_private_r_${valid_param_private_r}_valid_param_lora_r_${valid_param_lora_r}_num_chunk_${num_chunk_per_vec}
+output_dir=./output/3B/MoS_flan_v2_${TIME}_GPU_${GPU_ID}_r_${lora_r}_lr_${learning_rate}_sd_${seed}_ft_mode_${finetune_mode}_init_lora_A_vec_value_${init_lora_A_vec_value}_init_lora_A_vec_std_${init_lora_A_vec_std}_valid_param_private_r_${valid_param_private_r}_valid_param_lora_r_${valid_param_lora_r}_num_chunk_${num_chunk_per_vec}
 
 export PYTHONPATH="${PYTHONPATH}:/workspace"
 export CUDA_VISIBLE_DEVICES=$GPU_ID
+
+# Check if output_dir exists, and create it if not
+if [ ! -d "$output_dir" ]; then
+    mkdir -p "$output_dir"
+fi
+
 
 # Train QLoRA
 echo "------------------- Training QLoRA -------------------"
@@ -41,7 +47,7 @@ python finetune_trainer.py \
     --enable_lora_bias False \
     --init2zero_via_vec False \
     --lora_modules all \
-    --model_name_or_path meta-llama/Llama-2-7b-hf \
+    --model_name_or_path meta-llama/Llama-3.2-3B \
     --token ${HF_TOKEN} \
     --output_dir ${output_dir} \
     --overwrite_output_dir True \
@@ -64,7 +70,7 @@ python finetune_trainer.py \
     --lr_scheduler_type linear \
     --per_device_train_batch_size 16 \
     --gradient_accumulation_steps 1 \
-    --max_steps 10000 \
+    --num_train_epochs ${num_epoch} \
     --weight_decay 0.0 \
     --max_grad_norm 0.3 \
     --do_eval True \
@@ -84,17 +90,20 @@ python finetune_trainer.py \
 # --use_auth_token True \
 # --adam_beta2 0.999  \
 # --max_new_tokens 256  \
+# --max_steps 10\
+
+rm -rf ${output_dir}/adapter_model.safetensors
 
 # Merge QLoRA
 echo "------------------- Merge QLoRA -------------------"
 python /workspace/merge_lora.py \
-    --base_model_name_or_path meta-llama/Llama-2-7b-hf \
+    --base_model_name_or_path meta-llama/Llama-3.2-3B \
     --lora_model_name_or_path ${output_dir} \
     --output_dir ${output_dir}/lora_merged/ \
     --qlora \
     --save_tokenizer
 
-# Evaluating Tulu 7B model using cot and no_cot format
+# Evaluating Tulu 13B model using cot and no_cot format
 echo "------------------- Evaluating on BBH -------------------"
 python -m eval.bbh.run_eval \
     --data_dir data/eval/bbh \
