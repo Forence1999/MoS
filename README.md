@@ -1,3 +1,5 @@
+
+
 <h1 align="center">
 <br>
 MoS: Unleashing Parameter Efficiency of Low-Rank Adaptation with Mixture of Shards
@@ -78,7 +80,7 @@ docker run \
     --gpus all \
     --network=host \
     -v <PROJECT_DIR>:/workspace \
-    -it forence/forence/mop_llama3:v0 /bin/bash
+    -it forence/mop_llama3:v0 /bin/bash
 
 cd /workspace
 
@@ -151,7 +153,6 @@ Here's a detailed description for each parameter:
 - `NUM_PRIVATE_RANK`: The number of equivalent lora ranks that are preserved private in `Shard Privatization`.
 - `VALID_LORA_RANK`: Equivalent valid lora ranks for fine-tuning.
 - `NUM_CHUNK`: Number of shards defined in `Vector Sharding`.
-
 
 
 
